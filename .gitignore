@@ -1,0 +1,6 @@
+viton_env/
+dataset/
+checkpoints/
+__pycache__/
+*.pth
+*.pyc
