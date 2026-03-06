@@ -146,36 +146,51 @@ class FeatureCorrelation(nn.Module):
         super(FeatureCorrelation, self).__init__()
 
     def forward(self, featureA, featureB):
-        # Reshape features for matrix multiplication.
+
         b, c, h, w = featureA.size()
-        featureA = featureA.permute(0, 3, 2, 1).reshape(b, w * h, c)
-        featureB = featureB.reshape(b, c, h * w)
 
-        # Perform matrix multiplication.
-        corr = torch.bmm(featureA, featureB).reshape(b, w * h, h, w)
-        return corr
+        featureA = featureA.view(b, c, h*w)
+        featureB = featureB.view(b, c, h*w)
 
+        featureA = featureA.permute(0,2,1)
+
+        feature_mul = torch.bmm(featureA, featureB)
+
+        correlation_tensor = feature_mul.view(b, h*w, h, w)
+
+        correlation_tensor = correlation_tensor[:, :192, :, :]
+
+        return correlation_tensor
+    
 class FeatureRegression(nn.Module):
-    def __init__(self, input_nc=48, output_size=6, norm_layer=nn.BatchNorm2d):
+    def __init__(self, input_nc=192, output_size=6, norm_layer=nn.BatchNorm2d):
         super(FeatureRegression, self).__init__()
 
         self.conv = nn.Sequential(
-            nn.Conv2d(input_nc, 512, kernel_size=4, stride=2, padding=1), norm_layer(512), nn.ReLU(),
-            nn.Conv2d(512, 256, kernel_size=4, stride=2, padding=1), norm_layer(256), nn.ReLU(),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1), norm_layer(128), nn.ReLU(),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1), norm_layer(64), nn.ReLU()
+            nn.Conv2d(input_nc, 512, kernel_size=4, stride=2, padding=1),
+            norm_layer(512), nn.ReLU(),
+
+            nn.Conv2d(512, 256, kernel_size=4, stride=2, padding=1),
+            norm_layer(256), nn.ReLU(),
+
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            norm_layer(128), nn.ReLU(),
+
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            norm_layer(64), nn.ReLU()
         )
 
-        # 🔥 Correct flattened size for 512×384
-        self.linear = nn.Linear(128, output_size)
+        # ORIGINAL SIZE expected by checkpoint
+        self.linear = nn.Linear(768, output_size)
 
         self.tanh = nn.Tanh()
 
     def forward(self, x):
         x = self.conv(x)
-        x = self.linear(x.reshape(x.size(0), -1))
+        x = F.adaptive_avg_pool2d(x, (3, 4))   # forces 64x3x4 = 768
+        x = x.view(x.size(0), -1)
+        x = self.linear(x)
         return self.tanh(x)
-
 
 class TpsGridGen(nn.Module):
     def __init__(self, opt, dtype=torch.float):
@@ -315,8 +330,10 @@ class GMM(nn.Module):
         self.extractionA = FeatureExtraction(inputA_nc, ngf=64, num_layers=4)
         self.extractionB = FeatureExtraction(inputB_nc, ngf=64, num_layers=4)
         self.correlation = FeatureCorrelation()
-        self.regression = FeatureRegression(input_nc=(opt.load_width // 64) * (opt.load_height // 64),
-                                            output_size=2 * opt.grid_size**2)
+        self.regression = FeatureRegression(
+            input_nc=192,
+            output_size=2 * opt.grid_size ** 2
+        )
         self.gridGen = TpsGridGen(opt)
 
     def forward(self, inputA, inputB):
@@ -384,8 +401,8 @@ class ALIASNorm(nn.Module):
     def forward(self, x, seg, misalign_mask=None):
         # Part 1. Generate parameter-free normalized activations.
         b, c, h, w = x.size()
+        #noise = (torch.randn(b, w, h, 1).cuda() * self.noise_scale).transpose(1, 3)
         noise = (torch.randn(b, w, h, 1, device=x.device) * self.noise_scale).transpose(1, 3)
-
         if misalign_mask is None:
             normalized = self.param_free_norm(x + noise)
         else:

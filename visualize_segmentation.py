@@ -1,145 +1,102 @@
 import torch
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-
-from networks import SegGenerator
-from datasets import VITONDataset, VITONDataLoader
-
-
-# ---- SAME Opt class used in training ----
-class Opt:
-    def __init__(self):
-        self.dataset_dir = r"D:\Projects\virtual\dataset"
-        self.dataset_mode = "train"
-        self.dataset_list = "train_pairs.txt"
-
-        self.load_height = 512
-        self.load_width = 384
-
-        self.batch_size = 1
-        self.workers = 0
-        self.shuffle = False
-
-        self.semantic_nc = 13
-        self.init_type = "xavier"
-        self.init_variance = 0.02
-
-        self.checkpoint_dir = "./checkpoints"
-
-
-opt = Opt()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ---- Load dataset ----
-dataset = VITONDataset(opt)
-loader = VITONDataLoader(opt, dataset)
-
-# ---- Create model ----
-model = SegGenerator(opt, input_nc=20, output_nc=opt.semantic_nc).to(device)
-
-# ---- Load trained weights ----
-checkpoint = torch.load("checkpoints/seg_epoch_31.pth", map_location=device)
-model.load_state_dict(checkpoint)
-model.eval()
-
-print("Model loaded successfully!")
-# ---- Debug: Check what keys exist ----
-for data in loader.data_loader:
-    print("Available keys:", data.keys())
-    break
-# ---- Take one sample ----
-sample = next(iter(loader.data_loader))
-gt_mask = sample['parse_gt'].to(device)
-parse_agnostic = sample['parse_agnostic'].to(device)
-pose = sample['pose'].to(device)
-c = sample['cloth']['unpaired'].to(device)
-cm = sample['cloth_mask']['unpaired'].to(device)
-
-# ---- Same preprocessing as training ----
-parse_down = F.interpolate(parse_agnostic, size=(256, 192), mode='bilinear')
-pose_down = F.interpolate(pose, size=(256, 192), mode='bilinear')
-c_masked_down = F.interpolate(c * cm, size=(256, 192), mode='bilinear')
-cm_down = F.interpolate(cm, size=(256, 192), mode='bilinear')
-
-seg_input = torch.cat((cm_down, c_masked_down, parse_down, pose_down), dim=1)
-
-# ---- Prediction ----
 import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+from seg_dataset import SegDataset  
+from networks import SegGenerator
+from options import SegOptions
 
-num_classes = 13
-total_intersection = np.zeros(num_classes)
-total_union = np.zeros(num_classes)
 
-model.eval()
+# convert label map → color image
+def decode_segmap(label_map, num_classes=13):
 
-with torch.no_grad():
-    for i, data in enumerate(loader.data_loader):
+    colors = np.array([
+        [0,0,0],
+        [128,0,0],
+        [255,0,0],
+        [0,85,0],
+        [170,0,51],
+        [255,85,0],
+        [0,0,85],
+        [0,119,221],
+        [85,85,0],
+        [0,85,85],
+        [85,51,0],
+        [52,86,128],
+        [0,128,0]
+    ])
 
-        if i == 50:
+    h, w = label_map.shape
+    color_image = np.zeros((h,w,3))
+
+    for i in range(num_classes):
+        color_image[label_map==i] = colors[i]
+
+    return color_image / 255
+
+
+def visualize_seg():
+
+    opt = SegOptions()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    dataset = SegDataset(opt)
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+    model = SegGenerator(opt, input_nc=21, output_nc=opt.semantic_nc).to(device)
+    
+
+    model.load_state_dict(torch.load("checkpoints/seg_final.pth"))
+
+    model.eval()
+
+    with torch.no_grad():
+
+        for data in loader:
+
+            image = data["image"].to(device)
+            pose = data["pose"].to(device)
+            pose = pose.repeat(1,6,1,1)
+
+            input_tensor = torch.cat([image, pose], 1)
+
+            print("Input shape:", input_tensor.shape)
+
+            gt_parse = data["parse"].to(device)
+
+            pred = model(input_tensor)
+
+            pred = torch.argmax(pred, dim=1)
+
+            img = image[0].cpu().permute(1,2,0).numpy()
+
+            gt = gt_parse[0].cpu().numpy()
+
+            pr = pred[0].cpu().numpy()
+
+            gt_color = decode_segmap(gt)
+            pr_color = decode_segmap(pr)
+
+            plt.figure(figsize=(12,4))
+
+            plt.subplot(1,3,1)
+            plt.title("Input Image")
+            plt.imshow(img)
+
+            plt.subplot(1,3,2)
+            plt.title("Ground Truth")
+            plt.imshow(gt_color)
+
+            plt.subplot(1,3,3)
+            plt.title("Prediction")
+            plt.imshow(pr_color)
+
+            plt.show()
+
             break
 
-        parse_agnostic = data['parse_agnostic'].to(device)
-        pose = data['pose'].to(device)
-        c = data['cloth']['unpaired'].to(device)
-        cm = data['cloth_mask']['unpaired'].to(device)
-        gt_mask = data['parse_gt'].to(device)
 
-        gt_mask = F.interpolate(
-            gt_mask.unsqueeze(1).float(),
-            size=(256, 192),
-            mode='nearest'
-        ).squeeze(1).long()
-
-        parse_down = F.interpolate(parse_agnostic, size=(256, 192), mode='bilinear')
-        pose_down = F.interpolate(pose, size=(256, 192), mode='bilinear')
-        c_masked_down = F.interpolate(c * cm, size=(256, 192), mode='bilinear')
-        cm_down = F.interpolate(cm, size=(256, 192), mode='bilinear')
-
-        seg_input = torch.cat((cm_down, c_masked_down, parse_down, pose_down), dim=1)
-
-        output = model(seg_input)
-        pred_mask = torch.argmax(output, dim=1)
-        print(torch.unique(pred_mask))
-
-        pred = pred_mask.cpu().numpy()
-        
-        gt = gt_mask.cpu().numpy()
-
-        for cls in range(num_classes):
-            pred_inds = (pred == cls)
-            gt_inds = (gt == cls)
-
-            intersection = (pred_inds & gt_inds).sum()
-            union = (pred_inds | gt_inds).sum()
-
-            total_intersection[cls] += intersection
-            total_union[cls] += union
-
-# Compute IoU
-ious = []
-for cls in range(num_classes):
-    if total_union[cls] == 0:
-        ious.append(np.nan)
-    else:
-        ious.append(total_intersection[cls] / total_union[cls])
-
-for i, iou in enumerate(ious):
-    print(f"Class {i} IoU: {iou:.4f}" if not np.isnan(iou) else f"Class {i} IoU: NaN")
-
-mean_iou = np.nanmean(ious)
-print("\nFinal Mean IoU over dataset:", mean_iou)
-
-
-
-# ---- Plot ----
-plt.figure(figsize=(10,5))
-
-plt.subplot(1,2,1)
-plt.title("Ground Truth")
-plt.imshow(gt_mask[0].cpu().numpy())
-
-plt.subplot(1,2,2)
-plt.title("Predicted Mask")
-plt.imshow(pred_mask[0].cpu().numpy())
-
-plt.show()
+if __name__ == "__main__":
+    visualize_seg()

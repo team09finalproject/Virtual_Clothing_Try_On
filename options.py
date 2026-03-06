@@ -1,6 +1,6 @@
 class SegOptions:
     def __init__(self):
-        self.dataset_dir = "C:\Users\Administrator\Desktop\virtual\viton-hd"
+        self.dataset_dir = "D:/Projects/virtual/dataset"
         self.dataset_mode = "train"
         self.dataset_list = "train_pairs.txt"
 
@@ -23,7 +23,10 @@ class SegOptions:
 
 class GMMOptions:
     def __init__(self):
-        self.dataset_dir = "D:/VITON-HD"
+
+        # dataset path
+        self.dataroot = "D:/Projects/virtual/dataset/train"
+
         self.dataset_mode = "train"
         self.dataset_list = "train_pairs.txt"
 
@@ -40,3 +43,13 @@ class GMMOptions:
         self.epochs = 70
 
         self.checkpoint_dir = "./checkpoints"
+
+        # ADD THIS
+        self.checkpoint = "./checkpoints/gmm_final.pth"
+        self.num_upsampling_layers = "most"
+        self.ngf = 64
+        self.norm_G = "spectralaliasinstance"
+
+        self.semantic_nc = 7
+        self.init_type = "xavier"
+        self.init_variance = 0.02

@@ -82,12 +82,6 @@ class VITONDataset(data.Dataset):
 
         length_a = np.linalg.norm(pose_data[5] - pose_data[2])
         length_b = np.linalg.norm(pose_data[12] - pose_data[9])
-
-        if length_a < 1e-6:
-            length_a = 1
-
-        if length_b < 1e-6:
-            length_b = 1
         point = (pose_data[9] + pose_data[12]) / 2
         pose_data[9] = point + (pose_data[9] - point) / length_b * length_a
         pose_data[12] = point + (pose_data[12] - point) / length_b * length_a
@@ -126,50 +120,25 @@ class VITONDataset(data.Dataset):
         c_name = {}
         c = {}
         cm = {}
-
-        # ---------------- Cloth ----------------
         for key in self.c_names:
             c_name[key] = self.c_names[key][index]
+            c[key] = Image.open(osp.join(self.data_path, 'cloth', c_name[key])).convert('RGB')
+            c[key] = transforms.Resize(self.load_width, interpolation=2)(c[key])
+            cm[key] = Image.open(osp.join(self.data_path, 'cloth-mask', c_name[key]))
+            cm[key] = transforms.Resize(self.load_width, interpolation=0)(cm[key])
 
-            c[key] = Image.open(
-                osp.join(self.data_path, 'cloth', c_name[key])
-            ).convert('RGB')
-
-            c[key] = transforms.Resize(
-                (self.load_height, self.load_width),
-                interpolation=2
-            )(c[key])
-
-            cm[key] = Image.open(
-                osp.join(self.data_path, 'cloth-mask', c_name[key])
-            )
-
-            cm[key] = transforms.Resize(
-                (self.load_height, self.load_width),
-                interpolation=0
-            )(cm[key])
-
-            c[key] = self.transform(c[key])
-
+            c[key] = self.transform(c[key])  # [-1,1]
             cm_array = np.array(cm[key])
             cm_array = (cm_array >= 128).astype(np.float32)
-            cm[key] = torch.from_numpy(cm_array)
+            cm[key] = torch.from_numpy(cm_array)  # [0,1]
             cm[key].unsqueeze_(0)
 
-        # ---------------- Pose image ----------------
+        # load pose image
         pose_name = img_name.replace('.jpg', '_rendered.png')
-        pose_rgb = Image.open(
-            osp.join(self.data_path, 'openpose-img', pose_name)
-        )
+        pose_rgb = Image.open(osp.join(self.data_path, 'openpose-img', pose_name))
+        pose_rgb = transforms.Resize(self.load_width, interpolation=2)(pose_rgb)
+        pose_rgb = self.transform(pose_rgb)  # [-1,1]
 
-        pose_rgb = transforms.Resize(
-            (self.load_height, self.load_width),
-            interpolation=2
-        )(pose_rgb)
-
-        pose_rgb = self.transform(pose_rgb)
-
-        # ---------------- Pose keypoints ----------------
         pose_name = img_name.replace('.jpg', '_keypoints.json')
         with open(osp.join(self.data_path, 'openpose-json', pose_name), 'r') as f:
             pose_label = json.load(f)
@@ -177,23 +146,13 @@ class VITONDataset(data.Dataset):
             pose_data = np.array(pose_data)
             pose_data = pose_data.reshape((-1, 3))[:, :2]
 
-        # ---------------- Parse ----------------
+        # load parsing image
         parse_name = img_name.replace('.jpg', '.png')
-        parse = Image.open(
-            osp.join(self.data_path, 'image-parse', parse_name)
-        )
-
-        parse = transforms.Resize(
-            (self.load_height, self.load_width),
-            interpolation=0
-        )(parse)
-
+        parse = Image.open(osp.join(self.data_path, 'image-parse', parse_name))
+        parse = transforms.Resize(self.load_width, interpolation=0)(parse)
         parse_agnostic = self.get_parse_agnostic(parse, pose_data)
-        parse_agnostic = torch.from_numpy(
-            np.array(parse_agnostic)[None]
-        ).long()
+        parse_agnostic = torch.from_numpy(np.array(parse_agnostic)[None]).long()
 
-        # ---------------- Parse map ----------------
         labels = {
             0: ['background', [0, 10]],
             1: ['hair', [1, 2]],
@@ -209,49 +168,31 @@ class VITONDataset(data.Dataset):
             11: ['socks', [8]],
             12: ['noise', [3, 11]]
         }
-
-        parse_agnostic_map = torch.zeros(
-            20, self.load_height, self.load_width
-        )
-
+        parse_agnostic_map = torch.zeros(20, self.load_height, self.load_width, dtype=torch.float)
         parse_agnostic_map.scatter_(0, parse_agnostic, 1.0)
-
-        new_parse_agnostic_map = torch.zeros(
-            self.semantic_nc, self.load_height, self.load_width
-        )
-
+        new_parse_agnostic_map = torch.zeros(self.semantic_nc, self.load_height, self.load_width, dtype=torch.float)
         for i in range(len(labels)):
             for label in labels[i][1]:
                 new_parse_agnostic_map[i] += parse_agnostic_map[label]
 
-        # ---------------- Person image ----------------
-        img = Image.open(
-            osp.join(self.data_path, 'image', img_name)
-        )
-
-        img = transforms.Resize(
-            (self.load_height, self.load_width),
-            interpolation=2
-        )(img)
-
+        # load person image
+        img = Image.open(osp.join(self.data_path, 'image', img_name))
+        img = transforms.Resize(self.load_width, interpolation=2)(img)
         img_agnostic = self.get_img_agnostic(img, parse, pose_data)
-
         img = self.transform(img)
-        img_agnostic = self.transform(img_agnostic)
+        img_agnostic = self.transform(img_agnostic)  # [-1,1]
 
-        parse_gt = torch.from_numpy(np.array(parse)).long()
-
-        return {
+        result = {
             'img_name': img_name,
             'c_name': c_name,
             'img': img,
             'img_agnostic': img_agnostic,
             'parse_agnostic': new_parse_agnostic_map,
             'pose': pose_rgb,
-            'parse_gt': parse_gt,   # ✅ FIXED
             'cloth': c,
             'cloth_mask': cm,
         }
+        return result
 
     def __len__(self):
         return len(self.img_names)
